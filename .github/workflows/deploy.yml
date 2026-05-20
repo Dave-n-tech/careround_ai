@@ -1,0 +1,128 @@
+name: Build and Deploy careround-ai
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_NAME: careround-ai
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          IMAGE=$ECR_REGISTRY/$IMAGE_NAME:${{ github.sha }}
+          LATEST=$ECR_REGISTRY/$IMAGE_NAME:latest
+          docker build -t $IMAGE -t $LATEST .
+          docker push $IMAGE
+          docker push $LATEST
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+        with:
+          host: ${{ secrets.AI_EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: ECR_REGISTRY,IMAGE_NAME,AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_DEFAULT_REGION
+          script: |
+            set -e
+
+            if ! command -v aws >/dev/null 2>&1; then
+              sudo yum install -y awscli
+            fi
+
+            aws ecr get-login-password --region $AWS_REGION | \
+              sudo docker login --username AWS --password-stdin $ECR_REGISTRY
+
+            sudo docker pull $ECR_REGISTRY/$IMAGE_NAME:latest
+
+            sudo docker stop careround-ai 2>/dev/null || true
+            sudo docker rm careround-ai 2>/dev/null || true
+            sudo mkdir -p /opt/careround-ai/hf-cache
+
+            sudo docker run -d \
+              --name careround-ai \
+              --restart unless-stopped \
+              --network host \
+              -v /opt/careround-ai/hf-cache:/root/.cache/huggingface \
+              -e AI_PROVIDER=ollama \
+              -e TRANSCRIPTION_PROVIDER=whisper \
+              -e OLLAMA_HOST=http://localhost:11434 \
+              -e WHISPER_MODEL=base.en \
+              -e LLM_MODEL=llama3.2:3b \
+              $ECR_REGISTRY/$IMAGE_NAME:latest
+
+      - name: Wait for health check to pass
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.AI_EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            echo "Waiting for service to become ready..."
+            for i in $(seq 1 60); do
+              STATUS=$(curl -s http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null)
+              echo "Attempt $i: status=$STATUS"
+              if [ "$STATUS" = "ready" ]; then
+                echo "Service is ready."
+                exit 0
+              fi
+              sleep 10
+            done
+            echo "Health check timed out after 10 minutes"
+            sudo docker logs careround-ai --tail 100 || true
+            exit 1
+
+      - name: Smoke test endpoint
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.AI_EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            curl -fsS -X POST http://localhost:8000/process-voice-note \
+              -F "audio=@/dev/null;type=audio/wav" \
+              -F "patient_id=deploy-smoke-test" \
+              -F "current_time=2026-05-20T10:00:00" \
+              -F "mode=ward_round"
