@@ -45,7 +45,12 @@ async def process_voice_note(
     audio_bytes = await audio.read()
     logger.info("Received audio for patient_id=%s mode=%s bytes=%d", patient_id, mode, len(audio_bytes))
 
-    transcription = whisper_service.transcribe(audio_bytes)
+    try:
+        transcription = whisper_service.transcribe(audio_bytes)
+    except Exception as exc:
+        logger.error("Transcription failed for patient_id=%s: %s", patient_id, type(exc).__name__)
+        raise HTTPException(status_code=422, detail="Audio could not be transcribed") from exc
+
     logger.info("Transcription complete for patient_id=%s length=%d", patient_id, len(transcription))
 
     if mode == "transcription_only":

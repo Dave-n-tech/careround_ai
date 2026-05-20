@@ -121,8 +121,26 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             set -e
+            python3 - <<'PY'
+            import math
+            import struct
+            import wave
+
+            sample_rate = 16000
+            duration_seconds = 1
+            frequency = 440
+
+            with wave.open("/tmp/careround-smoke.wav", "w") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                for i in range(sample_rate * duration_seconds):
+                    value = int(12000 * math.sin(2 * math.pi * frequency * i / sample_rate))
+                    wav.writeframes(struct.pack("<h", value))
+            PY
+
             curl -fsS -X POST http://localhost:8000/process-voice-note \
-              -F "audio=@/dev/null;type=audio/wav" \
+              -F "audio=@/tmp/careround-smoke.wav;type=audio/wav" \
               -F "patient_id=deploy-smoke-test" \
               -F "current_time=2026-05-20T10:00:00" \
               -F "mode=ward_round"
