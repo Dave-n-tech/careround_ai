@@ -11,6 +11,7 @@ from app.models.schemas import (
     PrescriptionExtracted,
     ProcessVoiceNoteResponse,
 )
+from app.services.llm_service import LLMOutputError
 from app.services.llm_service import llm_service
 from app.services.whisper_service import whisper_service
 
@@ -63,15 +64,16 @@ async def process_voice_note(
     # ward_round: structure note and extract prescriptions via LLM
     try:
         raw_llm = llm_service.structure_and_extract(transcription)
-    except Exception as exc:
-        logger.error("LLM inference failed for patient_id=%s: %s", patient_id, type(exc).__name__)
-        raise HTTPException(status_code=502, detail="LLM inference failed") from exc
-
-    try:
         llm_out = LLMOutput.model_validate(raw_llm)
+    except LLMOutputError as exc:
+        logger.error("LLM output validation failed for patient_id=%s: %s", patient_id, exc)
+        raise HTTPException(status_code=502, detail="LLM returned unprocessable output") from exc
     except ValidationError as exc:
         logger.error("LLM output validation failed for patient_id=%s: %s", patient_id, exc)
         raise HTTPException(status_code=502, detail="LLM returned unprocessable output") from exc
+    except Exception as exc:
+        logger.error("LLM inference failed for patient_id=%s: %s", patient_id, type(exc).__name__)
+        raise HTTPException(status_code=502, detail="LLM inference failed") from exc
 
     prescriptions_out: list[PrescriptionExtracted] = []
     for llm_rx in llm_out.prescriptions:

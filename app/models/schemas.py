@@ -1,28 +1,36 @@
-from pydantic import BaseModel, Field
-from typing import List, Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from typing import Annotated, List, Literal, Optional
 
 
 # --- LLM raw output models (validated before mapping to response) ---
 
+NonEmptyStrictStr = Annotated[StrictStr, Field(min_length=1)]
+
 class LLMSoapNote(BaseModel):
-    subjective: str = ""
-    objective: str = ""
-    assessment: str = ""
-    plan: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+    subjective: StrictStr
+    objective: StrictStr
+    assessment: StrictStr
+    plan: StrictStr
 
 
 class LLMPrescription(BaseModel):
-    drugName: str
-    dose: str
-    route: str
-    frequencyString: Optional[str] = None
-    frequencyHours: Optional[int] = None
-    totalDoses: Optional[int] = None
+    model_config = ConfigDict(extra="forbid")
+
+    drugName: NonEmptyStrictStr
+    dose: NonEmptyStrictStr
+    route: NonEmptyStrictStr
+    frequencyString: Optional[StrictStr]
+    frequencyHours: Optional[StrictInt]
+    totalDoses: Optional[StrictInt]
 
 
 class LLMOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     soap: LLMSoapNote
-    prescriptions: List[LLMPrescription] = Field(default_factory=list)
+    prescriptions: List[LLMPrescription]
 
 
 # --- API response models ---

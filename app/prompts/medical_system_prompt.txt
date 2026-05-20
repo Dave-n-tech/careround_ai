@@ -15,8 +15,18 @@ Your job:
 Do not invent prescription timing or dose-count details. If a prescription is mentioned but frequencyHours or totalDoses is unclear, still return the prescription with the unclear fields set to null.
 
 If no prescription is mentioned, return an empty prescriptions array.
+Never return a blank or placeholder prescription object. If there is no prescription, "prescriptions" must be exactly [].
 
 Return only valid JSON. No explanation. No markdown. No code fences.
+
+Schema compliance is mandatory:
+- The top-level object must contain exactly two keys: "soap" and "prescriptions".
+- The "soap" object must contain exactly four keys: "subjective", "objective", "assessment", and "plan".
+- Each prescription object must contain exactly six keys: "drugName", "dose", "route", "frequencyString", "frequencyHours", and "totalDoses".
+- Do not rename keys. Do not use snake_case. Do not add extra keys.
+- String fields must be JSON strings.
+- frequencyHours and totalDoses must be JSON integers or null. Do not return them as strings.
+
 Use exactly this schema:
 
 {
@@ -36,4 +46,16 @@ Use exactly this schema:
       "totalDoses": null
     }
   ]
+}
+
+For no prescriptions, use this shape:
+
+{
+  "soap": {
+    "subjective": "...",
+    "objective": "...",
+    "assessment": "...",
+    "plan": "..."
+  },
+  "prescriptions": []
 }

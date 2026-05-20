@@ -160,6 +160,89 @@ def test_ward_round_no_prescriptions(mock_whisper, mock_llm, client):
     assert body["prescriptions"] == []
 
 
+@patch("app.routes.process_voice_note.llm_service")
+@patch("app.routes.process_voice_note.whisper_service")
+def test_ward_round_rejects_llm_field_name_drift(mock_whisper, mock_llm, client):
+    mock_whisper.is_ready.return_value = True
+    mock_whisper.transcribe.return_value = "Start ceftriaxone one gram IV every 12 hours for 4 doses."
+    mock_llm.is_ready.return_value = True
+    mock_llm.structure_and_extract.return_value = {
+        "clinicalNote": {
+            "Subjective": "Patient reports fever.",
+            "Objective": "Temperature elevated.",
+            "Assessment": "Possible infection.",
+            "Plan": "Start antibiotics.",
+        },
+        "medications": [
+            {
+                "drug_name": "Ceftriaxone",
+                "dosage": "1g",
+                "administration_route": "IV",
+                "frequency": "every 12 hours",
+                "frequency_hours": "12 hours",
+                "total_doses": "4",
+            }
+        ],
+    }
+
+    resp = client.post("/process-voice-note", data=_form(), files=_audio())
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "LLM returned unprocessable output"
+
+
+@patch("app.routes.process_voice_note.llm_service")
+@patch("app.routes.process_voice_note.whisper_service")
+def test_ward_round_rejects_missing_required_llm_keys(mock_whisper, mock_llm, client):
+    mock_whisper.is_ready.return_value = True
+    mock_whisper.transcribe.return_value = "Patient reviewed. No new medications."
+    mock_llm.is_ready.return_value = True
+    mock_llm.structure_and_extract.return_value = {
+        "soap": {
+            "subjective": "Reviewed.",
+            "objective": "",
+            "assessment": "",
+            "plan": "",
+        }
+    }
+
+    resp = client.post("/process-voice-note", data=_form(), files=_audio())
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "LLM returned unprocessable output"
+
+
+@patch("app.routes.process_voice_note.llm_service")
+@patch("app.routes.process_voice_note.whisper_service")
+def test_ward_round_rejects_empty_prescription_object(mock_whisper, mock_llm, client):
+    mock_whisper.is_ready.return_value = True
+    mock_whisper.transcribe.return_value = "Patient reviewed. No medications prescribed."
+    mock_llm.is_ready.return_value = True
+    mock_llm.structure_and_extract.return_value = {
+        "soap": {
+            "subjective": "Reviewed.",
+            "objective": "",
+            "assessment": "",
+            "plan": "",
+        },
+        "prescriptions": [
+            {
+                "drugName": "",
+                "dose": "",
+                "route": "",
+                "frequencyString": "",
+                "frequencyHours": None,
+                "totalDoses": None,
+            }
+        ],
+    }
+
+    resp = client.post("/process-voice-note", data=_form(), files=_audio())
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "LLM returned unprocessable output"
+
+
 # Integration tests: transcription_only mode
 @patch("app.routes.process_voice_note.llm_service")
 @patch("app.routes.process_voice_note.whisper_service")

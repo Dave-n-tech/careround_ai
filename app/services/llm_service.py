@@ -2,24 +2,57 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Sequence, cast
 
 import ollama
+from pydantic import ValidationError
 
 from app.config import settings
+from app.models.schemas import LLMOutput
 
 logger = logging.getLogger(__name__)
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "medical_system_prompt.txt"
 
+NO_PRESCRIPTION_EXAMPLE = {
+    "soap": {
+        "subjective": "Patient stable.",
+        "objective": "No acute findings.",
+        "assessment": "Stable.",
+        "plan": "Continue monitoring.",
+    },
+    "prescriptions": [],
+}
+
+PRESCRIPTION_EXAMPLE = {
+    "soap": {
+        "subjective": "Patient reports fever.",
+        "objective": "Temperature elevated.",
+        "assessment": "Possible infection.",
+        "plan": "Start antibiotics.",
+    },
+    "prescriptions": [
+        {
+            "drugName": "Amoxicillin",
+            "dose": "500mg",
+            "route": "oral",
+            "frequencyString": "every 6 hours",
+            "frequencyHours": 6,
+            "totalDoses": 4,
+        }
+    ],
+}
+
+
+class LLMOutputError(RuntimeError):
+    pass
+
 
 def _extract_json(text: str) -> str:
-    """Strip markdown code fences if present, then return the raw JSON string."""
+    """Return raw JSON text only; markdown/code fences are schema violations."""
     stripped = text.strip()
-    # Remove ```json ... ``` or ``` ... ``` wrappers that some LLMs add despite instructions
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", stripped)
-    if match:
-        return match.group(1).strip()
+    if re.search(r"```", stripped):
+        raise LLMOutputError("LLM returned markdown/code fences instead of raw JSON")
     return stripped
 
 
@@ -41,18 +74,7 @@ class LLMService:
         self._client = ollama.Client(host=settings.ollama_host)
         logger.info("Verifying LLM model: %s at %s", settings.llm_model, settings.ollama_host)
 
-        assert self._client is not None
-        response = self._client.chat(
-            model=settings.llm_model,
-            messages=[
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": "Patient stable. No new complaints."},
-            ],
-            format="json",
-            options={"temperature": 0.1},
-        )
-        content = self._extract_message_content(response)
-        json.loads(_extract_json(content))
+        self._structure_with_repair("Patient stable. No new complaints. No medications prescribed.")
         self._ready = True
         logger.info("LLM warm-up complete; model is ready")
 
@@ -66,23 +88,95 @@ class LLMService:
         if settings.ai_provider == "stub":
             return self._stub_structure(raw_text)
 
+        return self._structure_with_repair(raw_text)
+
+    def _structure_with_repair(self, raw_text: str) -> dict:
+        assert self._client is not None
+        first_output: dict[str, Any] = {}
+        schema_errors: list[dict[str, str]] = []
+        try:
+            first_output = self._chat_json([
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": raw_text},
+            ])
+            return self._validate_exact_output(first_output)
+        except json.JSONDecodeError:
+            schema_errors = [{"location": "$", "error": "response must be raw valid JSON"}]
+        except ValidationError as exc:
+            schema_errors = self._summarize_validation_errors(exc)
+        except LLMOutputError as exc:
+            schema_errors = [{"location": "$", "error": str(exc)}]
+
+        logger.warning(
+            "LLM output did not match exact schema; requesting one repair attempt. errors=%s",
+            schema_errors,
+        )
+
+        try:
+            repaired_output = self._chat_json([
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": raw_text},
+                {"role": "assistant", "content": json.dumps(first_output)},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response failed strict schema validation.\n"
+                        f"Validation errors: {json.dumps(schema_errors)}\n"
+                        "Return the same clinical content again as RAW JSON only.\n"
+                        "If no medication or prescription is mentioned, prescriptions must be an empty array.\n"
+                        f"No-prescription example: {json.dumps(NO_PRESCRIPTION_EXAMPLE)}\n"
+                        f"Prescription example: {json.dumps(PRESCRIPTION_EXAMPLE)}\n"
+                        "Rules: no markdown, no code fences, no extra keys, no missing keys, "
+                        "no renamed keys, no snake_case. frequencyHours and totalDoses must be "
+                        "JSON integers or null, never strings. Never return a blank or placeholder "
+                        "prescription object."
+                    ),
+                },
+            ])
+            return self._validate_exact_output(repaired_output)
+        except json.JSONDecodeError as exc:
+            logger.error("LLM repair attempt returned malformed JSON")
+            raise LLMOutputError("LLM returned JSON that does not match the required schema") from exc
+        except ValidationError as exc:
+            logger.error(
+                "LLM failed exact schema validation after repair attempt: errors=%s",
+                self._summarize_validation_errors(exc),
+            )
+            raise LLMOutputError("LLM returned JSON that does not match the required schema") from exc
+        except LLMOutputError as exc:
+            logger.error("LLM failed exact schema validation after repair attempt: %s", exc)
+            raise LLMOutputError("LLM returned JSON that does not match the required schema") from exc
+
+    def _chat_json(self, messages: list[dict[str, str]]) -> dict[str, Any]:
         assert self._client is not None
         response = self._client.chat(
             model=settings.llm_model,
-            messages=[
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": raw_text},
-            ],
+            messages=cast(Sequence[ollama.Message], messages),
             format="json",
             options={"temperature": 0.1},
         )
         content = self._extract_message_content(response)
         cleaned = _extract_json(content)
         try:
-            return json.loads(cleaned)
+            parsed = json.loads(cleaned)
         except json.JSONDecodeError as exc:
             logger.error("LLM returned malformed JSON: %s", type(exc).__name__)
             raise
+        if not isinstance(parsed, dict):
+            raise LLMOutputError("LLM returned JSON that is not an object")
+        return parsed
+
+    def _validate_exact_output(self, data: dict[str, Any]) -> dict[str, Any]:
+        return LLMOutput.model_validate(data).model_dump()
+
+    def _summarize_validation_errors(self, exc: ValidationError) -> list[dict[str, str]]:
+        return [
+            {
+                "location": ".".join(str(part) for part in error["loc"]),
+                "error": error["type"],
+            }
+            for error in exc.errors(include_input=False)
+        ]
 
     def _extract_message_content(self, response) -> str:
         try:
