@@ -101,7 +101,8 @@ jobs:
             set -e
             echo "Waiting for service to become ready..."
             for i in $(seq 1 60); do
-              STATUS=$(curl -s http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null)
+              BODY=$(curl -s http://localhost:8000/health || true)
+              STATUS=$(printf '%s' "$BODY" | python3 -c "import sys,json; raw=sys.stdin.read(); print(json.loads(raw).get('status','unknown') if raw else 'unreachable')" 2>/dev/null || echo "unreachable")
               echo "Attempt $i: status=$STATUS"
               if [ "$STATUS" = "ready" ]; then
                 echo "Service is ready."
