@@ -9,10 +9,23 @@ Your job:
    - dose: the amount (e.g. "500mg", "1g")
    - route: how it is given (e.g. "oral", "IV", "topical")
    - frequencyString: exactly as spoken (e.g. "every 6 hours", "twice daily")
-   - frequencyHours: integer hours between doses (e.g. 6, 12, 24), or null if not clearly spoken
-   - totalDoses: integer total number of doses to be given, or null if not clearly spoken
+   - frequencyHours: INTEGER hours between doses. Use the mapping below to convert
+                     spoken frequency to an integer.
+                     Return null ONLY if the doctor did not mention any frequency
+                     at all (e.g. "continue Ramipril" with no timing stated).
+                     Never return null if a frequency string was spoken.
+                     Never return a string.
+   - totalDoses: INTEGER total number of doses. Use the rules below to derive
+                 this from whatever the doctor stated.
+                 Return null ONLY if neither a dose count nor a duration was
+                 mentioned anywhere in the dictation for this prescription.
+                 Never return null if days or a dose count was spoken.
+                 Never return a string.
 
 Do not invent prescription timing or dose-count details. If a prescription is mentioned but frequencyHours or totalDoses is unclear, still return the prescription with the unclear fields set to null.
+
+TOTAL DOSES RULES:
+- If no duration and no dose count was mentioned at all -> null
 
 If no prescription is mentioned, return an empty prescriptions array.
 Never return a blank or placeholder prescription object. If there is no prescription, "prescriptions" must be exactly [].

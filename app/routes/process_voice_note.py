@@ -19,7 +19,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _calc_admin_times(current_time: str, frequency_hours: int, total_doses: int) -> list[str]:
+def _calc_admin_times(current_time: str, frequency_hours: int | None, total_doses: int | None) -> list[str]:
+    if frequency_hours is None or total_doses is None:
+        logger.info("Prescription missing timing fields - returning empty administrationTimes")
+        return []
+
     base = datetime.fromisoformat(current_time)
     return [
         (base + timedelta(hours=i * frequency_hours)).isoformat()
@@ -77,12 +81,11 @@ async def process_voice_note(
 
     prescriptions_out: list[PrescriptionExtracted] = []
     for llm_rx in llm_out.prescriptions:
-        admin_times: list[str] = []
-        if llm_rx.frequencyHours is not None and llm_rx.totalDoses is not None:
-            try:
-                admin_times = _calc_admin_times(current_time, llm_rx.frequencyHours, llm_rx.totalDoses)
-            except Exception:
-                logger.warning("Admin time calculation failed for drug=%s patient_id=%s", llm_rx.drugName, patient_id)
+        try:
+            admin_times = _calc_admin_times(current_time, llm_rx.frequencyHours, llm_rx.totalDoses)
+        except Exception:
+            admin_times = []
+            logger.warning("Admin time calculation failed for drug=%s patient_id=%s", llm_rx.drugName, patient_id)
 
         prescriptions_out.append(PrescriptionExtracted(
             drugName=llm_rx.drugName,

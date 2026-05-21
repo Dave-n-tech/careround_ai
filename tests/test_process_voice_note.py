@@ -9,6 +9,7 @@ import io
 from unittest.mock import MagicMock, patch
 
 from app.routes.process_voice_note import _calc_admin_times
+from app.services.llm_service import LLMService
 
 # Helpers
 def _audio():
@@ -64,6 +65,33 @@ def test_calc_admin_times_crosses_midnight():
         "2025-05-20T06:00:00",
         "2025-05-20T14:00:00",
     ]
+
+
+def test_llm_output_normalizes_missing_dose_and_route():
+    service = LLMService()
+    output = service._validate_exact_output({
+        "soap": {
+            "subjective": "Patient reviewed.",
+            "objective": "No acute findings.",
+            "assessment": "Stable.",
+            "plan": "Continue care.",
+        },
+        "prescriptions": [
+            {
+                "drugName": "Ramipril",
+                "dose": None,
+                "route": None,
+                "frequencyString": "once daily",
+                "frequencyHours": 24,
+                "totalDoses": None,
+            }
+        ],
+    })
+
+    rx = output["prescriptions"][0]
+    assert rx["drugName"] == "Ramipril"
+    assert rx["dose"] == "Not specified"
+    assert rx["route"] == "Not specified"
 
 
 # Integration tests: ward_round mode

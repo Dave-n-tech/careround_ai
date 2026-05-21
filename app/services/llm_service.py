@@ -167,7 +167,35 @@ class LLMService:
         return parsed
 
     def _validate_exact_output(self, data: dict[str, Any]) -> dict[str, Any]:
-        return LLMOutput.model_validate(data).model_dump()
+        normalized = self._normalize_llm_output(data)
+        return LLMOutput.model_validate(normalized).model_dump()
+
+    def _normalize_llm_output(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Clean common LLM scalar mistakes without changing the response shape."""
+        if not isinstance(data.get("prescriptions"), list):
+            return data
+
+        normalized = dict(data)
+        prescriptions: list[Any] = []
+        for item in data["prescriptions"]:
+            if not isinstance(item, dict):
+                prescriptions.append(item)
+                continue
+
+            prescription = dict(item)
+            for key in ("dose", "route"):
+                if prescription.get(key) is None:
+                    logger.info("Prescription missing %s - using review placeholder", key)
+                    prescription[key] = "Not specified"
+
+            if prescription.get("frequencyString") is not None and not isinstance(prescription.get("frequencyString"), str):
+                logger.info("Prescription frequencyString was not a string - clearing field")
+                prescription["frequencyString"] = None
+
+            prescriptions.append(prescription)
+
+        normalized["prescriptions"] = prescriptions
+        return normalized
 
     def _summarize_validation_errors(self, exc: ValidationError) -> list[dict[str, str]]:
         return [
