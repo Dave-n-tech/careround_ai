@@ -70,24 +70,41 @@ Current repository state:
 
 ## API Contract
 
-The specification names the AI service endpoint as:
+The sole voice note endpoint is:
 
 ```http
 POST /process-voice-note
 Content-Type: multipart/form-data
+Response: text/event-stream (SSE)
 ```
 
-Fields:
+The endpoint streams results progressively over Server-Sent Events so the UI can render the raw transcription as soon as Whisper finishes, without waiting for the LLM.
+
+### Request fields
 
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `audio` | file | Audio recording in any format Whisper supports |
-| `patient_id` | string | Used for patient context in prompting/logging |
+| `patient_id` | string | Used for logging only; not persisted or sent to the LLM |
 | `current_time` | ISO datetime string | Base time for deterministic administration-time calculation |
-| `mode` | string | `ward_round` by default; use `transcription_only` for handover notes and other free-text notes |
+| `mode` | string | `ward_round` (default); use `transcription_only` for handover notes and other free-text notes |
 
-Expected response:
+### SSE events
 
+| Event | Emitted after | Data |
+| --- | --- | --- |
+| `transcription_complete` | Whisper finishes | `{}` — empty progress signal; triggers UI loading state transition |
+| `processing_complete` | LLM + admin time calc finishes | `{ "rawTranscription": "...", "mode": "...", "clinicalNote": {...}, "prescriptions": [...] }` — full response payload |
+| `done` | Stream ends normally | `{}` |
+| `error` | Any stage fails after headers are sent | `{ "detail": "..." }` |
+
+Readiness is checked before the stream begins. A standard HTTP `503` is returned if models are still loading (before any SSE headers are sent).
+
+### `processing_complete` data shape
+
+The `processing_complete` event carries the full response for all modes. The `transcription_complete` event is a lightweight UX signal only (empty payload).
+
+**`ward_round`:**
 ```json
 {
   "rawTranscription": "Patient is a 54 year old male...",
@@ -117,20 +134,18 @@ Expected response:
 }
 ```
 
-For handover notes, nurse notes, and other non-ward-round recordings, use the same endpoint with `mode=transcription_only`. In that mode, the service should transcribe the audio and return only the raw transcription plus the mode:
-
+**`transcription_only`:**
 ```json
 {
-  "rawTranscription": "Nurse handover note text...",
+  "rawTranscription": "Nurse handover note...",
   "mode": "transcription_only",
   "prescriptions": []
 }
 ```
 
-Current repository note:
+`clinicalNote` is omitted in `transcription_only` mode.
 
-- `main.py` mounts the voice router without a prefix, so the implemented route is `/process-voice-note`.
-- `careround-core` should continue exposing `/api/v1/ai/process-voice-note` to clients and proxy internally to `careround-ai` at `/process-voice-note`.
+`careround-core` exposes `/api/v1/ai/process-voice-note` to clients and proxies to `/process-voice-note` on this service. Both must handle the SSE stream — `careround-core` should forward events to the frontend rather than buffering the full response.
 
 ## Health Contract
 
@@ -166,17 +181,20 @@ This is compatible with the core requirement as long as `status` remains present
 
 ## Processing Pipeline
 
-The service pipeline should be sequential:
+The pipeline is sequential with SSE events emitted at each stage boundary:
 
 1. Receive multipart audio and form fields.
-2. Reject with 503 if models are not ready.
+2. Reject with 503 if models are not ready (before stream starts — HTTP error, not SSE).
 3. Read the full audio file.
-4. Transcribe using `faster-whisper`.
-5. Send raw transcription to the medical LLM.
-6. Enforce valid JSON output from the LLM.
-7. Parse SOAP note and extracted prescriptions.
-8. Calculate `administrationTimes` in Python from `current_time`, `frequencyHours`, and `totalDoses`.
-9. Return the complete structured response to `careround-core`.
+4. Transcribe using `faster-whisper` — run in a thread pool so the event loop stays responsive to `/health` polls during the 30–60 s inference.
+5. **Emit `transcription_complete`** with empty payload `{}` — UX progress signal so the UI can transition its loading state.
+6. *(transcription_only: emit `processing_complete` with `rawTranscription` + `mode` + empty `prescriptions`, then emit `done` and close.)*
+7. Send raw transcription to the medical LLM (also in a thread pool).
+8. Enforce valid JSON output from the LLM (one repair attempt if the first response fails schema validation).
+9. Parse SOAP note, extracted prescriptions, and calculate `administrationTimes`.
+10. **Emit `processing_complete`** with `rawTranscription`, `mode`, `clinicalNote`, and `prescriptions`.
+11. **Emit `done`** and close the stream.
+12. On failure at any step after headers are sent: **emit `error`** and close.
 
 The AI boundary is important: use the LLM for language understanding, but use Python `datetime` arithmetic for administration times. The specification explicitly avoids LLM-based date/time calculation because it can hallucinate or make arithmetic mistakes.
 
