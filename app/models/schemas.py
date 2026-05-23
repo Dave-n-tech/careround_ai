@@ -33,6 +33,24 @@ class LLMOutput(BaseModel):
     prescriptions: List[LLMPrescription]
 
 
+class LLMPrescriptionExtract(BaseModel):
+    """Lenient prescription model for /extract-prescriptions — extra LLM keys are ignored."""
+    model_config = ConfigDict(extra="ignore")
+
+    drugName: NonEmptyStrictStr
+    dose: NonEmptyStrictStr
+    route: NonEmptyStrictStr
+    frequencyString: Optional[StrictStr] = None
+    frequencyHours: Optional[StrictInt] = None
+    totalDoses: Optional[StrictInt] = None
+
+
+class LLMPrescriptionListOutput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    prescriptions: List[LLMPrescriptionExtract]
+
+
 # --- API response models ---
 
 class PrescriptionExtracted(BaseModel):

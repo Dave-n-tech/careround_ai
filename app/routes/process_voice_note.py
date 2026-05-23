@@ -60,16 +60,12 @@ def _sse_event(event: str, data: dict) -> str:
 # ---------------------------------------------------------------------------
 # POST /process-voice-note — SSE streaming response
 #
-# Emits one event per completed pipeline stage so the client can render
-# partial results without waiting for the full pipeline.
-#
 # Events (in order):
-#   transcription_complete  {"rawTranscription": "..."}
-#   processing_complete     {"clinicalNote": {...}, "prescriptions": [...]}
-#   done                    {}
-#   error                   {"detail": "..."}   (terminal — replaces done on failure)
-#
-# In transcription_only mode, processing_complete is not emitted.
+#   transcription_complete    {}  — Whisper done; UI progress signal
+#   llm_structuring_complete  {}  — LLM done; UI progress signal (ward_round only)
+#   processing_complete       {rawTranscription, mode, clinicalNote, prescriptions}
+#   done                      {}
+#   error                     {"detail": "..."}  terminal — replaces done on failure
 # ---------------------------------------------------------------------------
 
 @router.post("/process-voice-note")

@@ -8,11 +8,12 @@ import ollama
 from pydantic import ValidationError
 
 from app.config import settings
-from app.models.schemas import LLMOutput
+from app.models.schemas import LLMOutput, LLMPrescriptionListOutput
 
 logger = logging.getLogger(__name__)
 
 PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "medical_system_prompt.txt"
+EXTRACTION_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "prescription_extraction_prompt.txt"
 
 NO_PRESCRIPTION_EXAMPLE = {
     "soap": {
@@ -60,11 +61,13 @@ class LLMService:
     def __init__(self):
         self._ready = False
         self._system_prompt = ""
+        self._extraction_prompt = ""
         self._client: Optional[ollama.Client] = None
 
     def load(self):
         """Call once at startup. Verifies the configured LLM provider is ready."""
         self._system_prompt = PROMPT_PATH.read_text()
+        self._extraction_prompt = EXTRACTION_PROMPT_PATH.read_text()
 
         if settings.ai_provider == "stub":
             logger.info("Using stub LLM provider")
@@ -220,6 +223,34 @@ class LLMService:
         last = items[-1]
         return last.get("message", {}).get("content", "")
 
+    def extract_prescriptions(self, note_text: str) -> list[dict]:
+        """Extract prescriptions from plain clinical note text. Returns [] on LLM output errors."""
+        if not self._ready:
+            raise RuntimeError("LLM not ready")
+        if settings.ai_provider == "stub":
+            return self._stub_prescriptions()
+
+        assert self._client is not None
+        try:
+            raw = self._chat_json([
+                {"role": "system", "content": self._extraction_prompt},
+                {"role": "user", "content": note_text},
+            ])
+        except (json.JSONDecodeError, LLMOutputError) as exc:
+            logger.warning("Prescription extraction returned invalid JSON — returning []: %s", exc)
+            return []
+
+        try:
+            normalized = self._normalize_llm_output(raw)
+            validated = LLMPrescriptionListOutput.model_validate(normalized)
+            return [rx.model_dump() for rx in validated.prescriptions]
+        except ValidationError as exc:
+            logger.warning(
+                "Prescription extraction output failed schema validation — returning []: errors=%s",
+                self._summarize_validation_errors(exc),
+            )
+            return []
+
     def _stub_structure(self, raw_text: str) -> dict:
         return {
             "soap": {
@@ -239,6 +270,18 @@ class LLMService:
                 }
             ],
         }
+
+    def _stub_prescriptions(self) -> list[dict]:
+        return [
+            {
+                "drugName": "Stub Medication",
+                "dose": "500mg",
+                "route": "oral",
+                "frequencyString": "twice daily",
+                "frequencyHours": 12,
+                "totalDoses": 4,
+            }
+        ]
 
 
 llm_service = LLMService()

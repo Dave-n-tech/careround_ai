@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.routes.health import router as health_router
 from app.routes.process_voice_note import router as voice_router
+from app.routes.extract_prescriptions import router as extract_router
 from app.services.whisper_service import whisper_service
 from app.services.llm_service import llm_service
 
@@ -45,3 +46,4 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(voice_router)
+app.include_router(extract_router)

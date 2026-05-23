@@ -132,8 +132,11 @@ def test_ward_round_emits_transcription_then_processing(mock_whisper, mock_llm, 
     assert events[0]["event"] == "transcription_complete"
     assert events[0]["data"] == {}
 
-    assert events[1]["event"] == "processing_complete"
-    pc = events[1]["data"]
+    assert events[1]["event"] == "llm_structuring_complete"
+    assert events[1]["data"] == {}
+
+    assert events[2]["event"] == "processing_complete"
+    pc = events[2]["data"]
     assert pc["rawTranscription"] == "Patient is stable."
     assert pc["mode"] == "ward_round"
     assert pc["clinicalNote"]["subjective"] == "Patient stable."
@@ -147,8 +150,8 @@ def test_ward_round_emits_transcription_then_processing(mock_whisper, mock_llm, 
         "2025-05-20T04:00:00",
     ]
 
-    assert events[2]["event"] == "done"
-    assert len(events) == 3
+    assert events[3]["event"] == "done"
+    assert len(events) == 4
 
 
 @patch("app.routes.process_voice_note.llm_service")
