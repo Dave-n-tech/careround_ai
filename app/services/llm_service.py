@@ -50,7 +50,6 @@ class LLMOutputError(RuntimeError):
 
 
 def _extract_json(text: str) -> str:
-    """Return raw JSON text only; markdown/code fences are schema violations."""
     stripped = text.strip()
     if re.search(r"```", stripped):
         raise LLMOutputError("LLM returned markdown/code fences instead of raw JSON")
@@ -65,7 +64,6 @@ class LLMService:
         self._client: Optional[ollama.Client] = None
 
     def load(self):
-        """Call once at startup. Verifies the configured LLM provider is ready."""
         self._system_prompt = PROMPT_PATH.read_text()
         self._extraction_prompt = EXTRACTION_PROMPT_PATH.read_text()
 
@@ -224,7 +222,7 @@ class LLMService:
         return last.get("message", {}).get("content", "")
 
     def extract_prescriptions(self, note_text: str) -> list[dict]:
-        """Extract prescriptions from plain clinical note text. Returns [] on LLM output errors."""
+        # Returns [] on LLM output errors — callers get an empty list, not an exception.
         if not self._ready:
             raise RuntimeError("LLM not ready")
         if settings.ai_provider == "stub":

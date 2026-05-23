@@ -57,17 +57,6 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-# ---------------------------------------------------------------------------
-# POST /process-voice-note — SSE streaming response
-#
-# Events (in order):
-#   transcription_complete    {}  — Whisper done; UI progress signal
-#   llm_structuring_complete  {}  — LLM done; UI progress signal (ward_round only)
-#   processing_complete       {rawTranscription, mode, clinicalNote, prescriptions}
-#   done                      {}
-#   error                     {"detail": "..."}  terminal — replaces done on failure
-# ---------------------------------------------------------------------------
-
 @router.post("/process-voice-note")
 async def process_voice_note(
     audio: UploadFile = File(...),
@@ -75,8 +64,7 @@ async def process_voice_note(
     current_time: str = Form(...),
     mode: Literal["ward_round", "transcription_only"] = Form("ward_round"),
 ):
-    # Readiness is checked before the stream begins — once headers are sent
-    # we can no longer return a 503 HTTP status.
+    # Readiness checked here — 503 cannot be returned once SSE headers are sent.
     if not whisper_service.is_ready():
         raise HTTPException(status_code=503, detail="Transcription model is still loading")
     if mode == "ward_round" and not llm_service.is_ready():
@@ -86,8 +74,7 @@ async def process_voice_note(
     logger.info("Received audio for patient_id=%s mode=%s bytes=%d", patient_id, mode, len(audio_bytes))
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        # Stage 1: Transcription — run in a thread so the event loop stays
-        # responsive to /health polls during the 30–60 s Whisper inference.
+        # asyncio.to_thread keeps the event loop free during long Whisper/LLM inference.
         try:
             transcription = await asyncio.to_thread(whisper_service.transcribe, audio_bytes)
         except Exception as exc:
@@ -96,8 +83,6 @@ async def process_voice_note(
             return
 
         logger.info("Transcription complete for patient_id=%s length=%d", patient_id, len(transcription))
-        # Minimal signal — lets the UI transition its loading state without
-        # sending the full transcription twice (it arrives in processing_complete).
         yield _sse_event("transcription_complete", {})
 
         if mode == "transcription_only":
@@ -109,7 +94,6 @@ async def process_voice_note(
             yield _sse_event("done", {})
             return
 
-        # Stage 2: LLM structuring and prescription extraction — also blocking.
         try:
             raw_llm = await asyncio.to_thread(llm_service.structure_and_extract, transcription)
             llm_out = LLMOutput.model_validate(raw_llm)
@@ -127,7 +111,6 @@ async def process_voice_note(
         soap = llm_out.soap
         logger.info("Extraction complete for patient_id=%s prescriptions=%d", patient_id, len(prescriptions_out))
 
-        # Full response in the final event — same shape as the old blocking endpoint.
         yield _sse_event("processing_complete", {
             "rawTranscription": transcription,
             "mode": mode,
