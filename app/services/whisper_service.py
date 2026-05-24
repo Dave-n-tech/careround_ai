@@ -2,6 +2,7 @@ import io
 import logging
 
 from app.config import settings
+from app.providers.groq_provider import GroqProvider
 
 logger = logging.getLogger(__name__)
 
@@ -9,13 +10,26 @@ logger = logging.getLogger(__name__)
 class WhisperService:
     def __init__(self):
         self._model = None
+        self._groq_provider: GroqProvider | None = None
         self._ready = False
 
     def load(self):
         """Call once at startup. Blocks until model is loaded."""
-        if settings.transcription_provider == "stub":
+        provider = settings.transcription_provider.lower()
+        if provider == "stub":
             logger.info("Using stub transcription provider")
             self._ready = True
+            return
+        if provider == "groq":
+            if not settings.groq_api_key:
+                raise RuntimeError("GROQ_API_KEY is required when TRANSCRIPTION_PROVIDER=groq")
+            self._groq_provider = GroqProvider(
+                api_key=settings.groq_api_key,
+                base_url=settings.groq_base_url,
+                timeout_seconds=settings.external_ai_timeout_seconds,
+            )
+            self._ready = True
+            logger.info("Using Groq transcription provider with model: %s", settings.groq_transcription_model)
             return
 
         from faster_whisper import WhisperModel
@@ -32,11 +46,25 @@ class WhisperService:
     def is_ready(self) -> bool:
         return self._ready
 
-    def transcribe(self, audio_bytes: bytes) -> str:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str:
         if not self._ready:
             raise RuntimeError("Whisper model not loaded")
-        if settings.transcription_provider == "stub":
+        provider = settings.transcription_provider.lower()
+        if provider == "stub":
             return "Stub transcription for local development."
+        if provider == "groq":
+            assert self._groq_provider is not None
+            return self._groq_provider.transcribe(
+                audio_bytes,
+                model=settings.groq_transcription_model,
+                filename=filename,
+                content_type=content_type,
+            )
         assert self._model is not None
         audio_file = io.BytesIO(audio_bytes)
         segments, _ = self._model.transcribe(

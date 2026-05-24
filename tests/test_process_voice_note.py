@@ -24,6 +24,16 @@ def _empty_audio():
     return {"audio": ("recording.webm", io.BytesIO(b""), "video/webm")}
 
 
+def _malformed_webm_audio():
+    return {
+        "audio": (
+            "recording.webm",
+            io.BytesIO(bytes.fromhex("1a1a45dfa39f4286810142f7810142f2")),
+            "audio/webm;codecs=opus",
+        )
+    }
+
+
 def _form(mode: str = "ward_round", current_time: str = "2025-05-19T10:00:00"):
     return {"patient_id": "p-001", "current_time": current_time, "mode": mode}
 
@@ -329,6 +339,19 @@ def test_empty_audio_upload_returns_400(mock_whisper, mock_llm, client):
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Uploaded audio file is empty"
+    mock_whisper.transcribe.assert_not_called()
+
+
+@patch("app.routes.process_voice_note.llm_service")
+@patch("app.routes.process_voice_note.whisper_service")
+def test_malformed_webm_upload_returns_400(mock_whisper, mock_llm, client):
+    mock_whisper.is_ready.return_value = True
+    mock_llm.is_ready.return_value = True
+
+    resp = client.post("/process-voice-note", data=_form(), files=_malformed_webm_audio())
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Uploaded WebM audio file is malformed"
     mock_whisper.transcribe.assert_not_called()
 
 

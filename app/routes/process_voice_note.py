@@ -25,6 +25,14 @@ def _audio_signature(audio_bytes: bytes, length: int = 16) -> str:
     return binascii.hexlify(audio_bytes[:length]).decode("ascii")
 
 
+def _looks_like_corrupt_webm(audio_bytes: bytes, filename: str | None, content_type: str | None) -> bool:
+    is_webm = (
+        (filename or "").lower().endswith(".webm")
+        or "webm" in (content_type or "").lower()
+    )
+    return is_webm and audio_bytes.startswith(b"\x1a\x1a\x45\xdf\xa3")
+
+
 def _calc_admin_times(current_time: str, frequency_hours: int | None, total_doses: int | None) -> list[str]:
     if frequency_hours is None or total_doses is None:
         logger.info("Prescription missing timing fields - returning empty administrationTimes")
@@ -93,11 +101,26 @@ async def process_voice_note(
             audio.content_type,
         )
         raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+    if _looks_like_corrupt_webm(audio_bytes, audio.filename, audio.content_type):
+        logger.warning(
+            "Rejected malformed WebM upload for patient_id=%s filename=%s content_type=%s bytes=%d signature=%s",
+            patient_id,
+            audio.filename,
+            audio.content_type,
+            len(audio_bytes),
+            _audio_signature(audio_bytes),
+        )
+        raise HTTPException(status_code=400, detail="Uploaded WebM audio file is malformed")
 
     async def event_stream() -> AsyncGenerator[str, None]:
         # asyncio.to_thread keeps the event loop free during long Whisper/LLM inference.
         try:
-            transcription = await asyncio.to_thread(whisper_service.transcribe, audio_bytes)
+            transcription = await asyncio.to_thread(
+                whisper_service.transcribe,
+                audio_bytes,
+                filename=audio.filename,
+                content_type=audio.content_type,
+            )
         except Exception as exc:
             logger.exception(
                 "Transcription failed for patient_id=%s filename=%s content_type=%s bytes=%d signature=%s error_type=%s",
@@ -132,7 +155,7 @@ async def process_voice_note(
             yield _sse_event("error", {"detail": "LLM returned unprocessable output"})
             return
         except Exception as exc:
-            logger.error("LLM inference failed for patient_id=%s: %s", patient_id, type(exc).__name__)
+            logger.exception("LLM inference failed for patient_id=%s: %s", patient_id, type(exc).__name__)
             yield _sse_event("error", {"detail": "LLM inference failed"})
             return
 

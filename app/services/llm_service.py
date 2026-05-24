@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.config import settings
 from app.models.schemas import LLMOutput, LLMPrescriptionListOutput
+from app.providers.groq_provider import GroqProvider
 
 logger = logging.getLogger(__name__)
 
@@ -62,14 +63,27 @@ class LLMService:
         self._system_prompt = ""
         self._extraction_prompt = ""
         self._client: Optional[ollama.Client] = None
+        self._groq_provider: GroqProvider | None = None
 
     def load(self):
         self._system_prompt = PROMPT_PATH.read_text()
         self._extraction_prompt = EXTRACTION_PROMPT_PATH.read_text()
 
-        if settings.ai_provider == "stub":
+        provider = settings.ai_provider.lower()
+        if provider == "stub":
             logger.info("Using stub LLM provider")
             self._ready = True
+            return
+        if provider == "groq":
+            if not settings.groq_api_key:
+                raise RuntimeError("GROQ_API_KEY is required when AI_PROVIDER=groq")
+            self._groq_provider = GroqProvider(
+                api_key=settings.groq_api_key,
+                base_url=settings.groq_base_url,
+                timeout_seconds=settings.external_ai_timeout_seconds,
+            )
+            self._ready = True
+            logger.info("Using Groq LLM provider with model: %s", settings.groq_llm_model)
             return
 
         self._client = ollama.Client(host=settings.ollama_host)
@@ -86,13 +100,12 @@ class LLMService:
         if not self._ready:
             raise RuntimeError("LLM not ready")
 
-        if settings.ai_provider == "stub":
+        if settings.ai_provider.lower() == "stub":
             return self._stub_structure(raw_text)
 
         return self._structure_with_repair(raw_text)
 
     def _structure_with_repair(self, raw_text: str) -> dict:
-        assert self._client is not None
         first_output: dict[str, Any] = {}
         schema_errors: list[dict[str, str]] = []
         try:
@@ -149,13 +162,17 @@ class LLMService:
             raise LLMOutputError("LLM returned JSON that does not match the required schema") from exc
 
     def _chat_json(self, messages: list[dict[str, str]]) -> dict[str, Any]:
-        assert self._client is not None
-        response = self._client.chat(
-            model=settings.llm_model,
-            messages=cast(Sequence[ollama.Message], messages),
-            format="json",
-            options={"temperature": 0.1},
-        )
+        if settings.ai_provider.lower() == "groq":
+            assert self._groq_provider is not None
+            response = self._groq_provider.chat_json(messages, model=settings.groq_llm_model)
+        else:
+            assert self._client is not None
+            response = self._client.chat(
+                model=settings.llm_model,
+                messages=cast(Sequence[ollama.Message], messages),
+                format="json",
+                options={"temperature": 0.1},
+            )
         content = self._extract_message_content(response)
         cleaned = _extract_json(content)
         try:
@@ -225,10 +242,9 @@ class LLMService:
         # Returns [] on LLM output errors — callers get an empty list, not an exception.
         if not self._ready:
             raise RuntimeError("LLM not ready")
-        if settings.ai_provider == "stub":
+        if settings.ai_provider.lower() == "stub":
             return self._stub_prescriptions()
 
-        assert self._client is not None
         try:
             raw = self._chat_json([
                 {"role": "system", "content": self._extraction_prompt},
