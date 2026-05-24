@@ -20,6 +20,10 @@ def _audio():
     return {"audio": ("test.wav", io.BytesIO(b"fake-audio"), "audio/wav")}
 
 
+def _empty_audio():
+    return {"audio": ("recording.webm", io.BytesIO(b""), "video/webm")}
+
+
 def _form(mode: str = "ward_round", current_time: str = "2025-05-19T10:00:00"):
     return {"patient_id": "p-001", "current_time": current_time, "mode": mode}
 
@@ -312,6 +316,39 @@ def test_transcription_only_emits_transcription_then_done(mock_whisper, mock_llm
 
     assert events[2]["event"] == "done"
     assert len(events) == 3
+    mock_llm.structure_and_extract.assert_not_called()
+
+
+@patch("app.routes.process_voice_note.llm_service")
+@patch("app.routes.process_voice_note.whisper_service")
+def test_empty_audio_upload_returns_400(mock_whisper, mock_llm, client):
+    mock_whisper.is_ready.return_value = True
+    mock_llm.is_ready.return_value = True
+
+    resp = client.post("/process-voice-note", data=_form(), files=_empty_audio())
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Uploaded audio file is empty"
+    mock_whisper.transcribe.assert_not_called()
+
+
+@patch("app.routes.process_voice_note.llm_service")
+@patch("app.routes.process_voice_note.whisper_service")
+def test_invalid_audio_emits_error_event_without_crashing(mock_whisper, mock_llm, client):
+    mock_whisper.is_ready.return_value = True
+    mock_whisper.transcribe.side_effect = ValueError("Invalid audio data")
+    mock_llm.is_ready.return_value = True
+
+    resp = client.post("/process-voice-note", data=_form(), files=_audio())
+
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events == [
+        {
+            "event": "error",
+            "data": {"detail": "Audio could not be transcribed"},
+        }
+    ]
     mock_llm.structure_and_extract.assert_not_called()
 
 

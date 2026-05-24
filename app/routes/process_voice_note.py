@@ -1,4 +1,5 @@
 import asyncio
+import binascii
 import json
 import logging
 from datetime import datetime, timedelta
@@ -18,6 +19,10 @@ from app.services.whisper_service import whisper_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _audio_signature(audio_bytes: bytes, length: int = 16) -> str:
+    return binascii.hexlify(audio_bytes[:length]).decode("ascii")
 
 
 def _calc_admin_times(current_time: str, frequency_hours: int | None, total_doses: int | None) -> list[str]:
@@ -71,14 +76,38 @@ async def process_voice_note(
         raise HTTPException(status_code=503, detail="AI service is still loading")
 
     audio_bytes = await audio.read()
-    logger.info("Received audio for patient_id=%s mode=%s bytes=%d", patient_id, mode, len(audio_bytes))
+    logger.info(
+        "Received audio for patient_id=%s mode=%s filename=%s content_type=%s bytes=%d signature=%s",
+        patient_id,
+        mode,
+        audio.filename,
+        audio.content_type,
+        len(audio_bytes),
+        _audio_signature(audio_bytes),
+    )
+    if not audio_bytes:
+        logger.warning(
+            "Rejected empty audio upload for patient_id=%s filename=%s content_type=%s",
+            patient_id,
+            audio.filename,
+            audio.content_type,
+        )
+        raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
 
     async def event_stream() -> AsyncGenerator[str, None]:
         # asyncio.to_thread keeps the event loop free during long Whisper/LLM inference.
         try:
             transcription = await asyncio.to_thread(whisper_service.transcribe, audio_bytes)
         except Exception as exc:
-            logger.error("Transcription failed for patient_id=%s: %s", patient_id, type(exc).__name__)
+            logger.exception(
+                "Transcription failed for patient_id=%s filename=%s content_type=%s bytes=%d signature=%s error_type=%s",
+                patient_id,
+                audio.filename,
+                audio.content_type,
+                len(audio_bytes),
+                _audio_signature(audio_bytes),
+                type(exc).__name__,
+            )
             yield _sse_event("error", {"detail": "Audio could not be transcribed"})
             return
 
