@@ -58,11 +58,12 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         with:
           host: ${{ secrets.AI_EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: ECR_REGISTRY,IMAGE_NAME,AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_DEFAULT_REGION
+          envs: ECR_REGISTRY,IMAGE_NAME,AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_DEFAULT_REGION,GROQ_API_KEY
           script: |
             set -e
 
@@ -84,11 +85,12 @@ jobs:
               --restart unless-stopped \
               --network host \
               -v /opt/careround-ai/hf-cache:/root/.cache/huggingface \
-              -e AI_PROVIDER=ollama \
-              -e TRANSCRIPTION_PROVIDER=whisper \
-              -e OLLAMA_HOST=http://localhost:11434 \
-              -e WHISPER_MODEL=base.en \
-              -e LLM_MODEL=llama3.2:3b \
+              -e AI_PROVIDER=groq \
+              -e TRANSCRIPTION_PROVIDER=groq \
+              -e GROQ_API_KEY="$GROQ_API_KEY" \
+              -e GROQ_LLM_MODEL=llama-3.3-70b-versatile \
+              -e GROQ_TRANSCRIPTION_MODEL=whisper-large-v3-turbo \
+              -e EXTERNAL_AI_TIMEOUT_SECONDS=90 \
               $ECR_REGISTRY/$IMAGE_NAME:latest
 
       - name: Wait for health check to pass
